@@ -22,8 +22,6 @@ Item pesos_e_valores[N_ITENS] = {
 
 int peso_maximo = 100;
 
-// --- FUNÇÕES DO GENETIC2020.PY ADAPTADAS ---
-
 int calcular_fitness(int genes[]) {
     int peso_total = 0;
     int valor_total = 0;
@@ -88,7 +86,6 @@ void evoluir(Individuo populacao[], int tamanho_populacao, float taxa_mutacao) {
     int n_pais = 0;
     int fitness_total_pais = 0;
 
-    // Filtra apenas indivíduos válidos (fitness >= 0) como no Python
     for (int i = 0; i < tamanho_populacao; i++) {
         if (populacao[i].fitness >= 0) {
             pais[n_pais] = populacao[i];
