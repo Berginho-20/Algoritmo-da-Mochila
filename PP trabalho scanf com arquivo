@@ -1,0 +1,217 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+typedef struct {
+    int peso;
+    int valor;
+} Item;
+
+typedef struct {
+    int *genes;
+    int fitness;
+} Individuo;
+
+Item *itens;
+int N_ITENS;
+int peso_maximo;
+
+// ---------------- FITNESS ----------------
+int calcular_fitness(int genes[]) {
+    int peso_total = 0;
+    int valor_total = 0;
+
+    for (int i = 0; i < N_ITENS; i++) {
+        if (genes[i] == 1) {
+            peso_total += itens[i].peso;
+            valor_total += itens[i].valor;
+        }
+    }
+
+    if (peso_total > peso_maximo) return -1;
+    return valor_total;
+}
+
+// ---------------- INDIVIDUO ----------------
+void criar_individuo(Individuo *ind) {
+    ind->genes = (int *) malloc(N_ITENS * sizeof(int));
+
+    for (int i = 0; i < N_ITENS; i++) {
+        ind->genes[i] = rand() % 2;
+    }
+
+    ind->fitness = calcular_fitness(ind->genes);
+}
+
+// ---------------- MEDIA ----------------
+double calcular_media_fitness(Individuo populacao[], int tamanho) {
+    double soma = 0;
+    int validos = 0;
+
+    for (int i = 0; i < tamanho; i++) {
+        if (populacao[i].fitness >= 0) {
+            soma += populacao[i].fitness;
+            validos++;
+        }
+    }
+
+    return (validos == 0) ? 0 : soma / validos;
+}
+
+// ---------------- ROLETA ----------------
+int sortear(Individuo pais[], int n_pais, int fitness_total, int ignorar) {
+    if (fitness_total <= 0) return rand() % n_pais;
+
+    int total = fitness_total;
+    if (ignorar != -1) total -= pais[ignorar].fitness;
+
+    float r = (float)rand() / RAND_MAX;
+    float acumulado = 0;
+
+    for (int i = 0; i < n_pais; i++) {
+        if (i == ignorar) continue;
+
+        acumulado += (float)pais[i].fitness / total;
+        if (acumulado >= r) return i;
+    }
+
+    return n_pais - 1;
+}
+
+// ---------------- EVOLUCAO ----------------
+void evoluir(Individuo populacao[], int tamanho, float taxa_mutacao) {
+
+    Individuo *pais = malloc(sizeof(Individuo) * tamanho);
+    int n_pais = 0;
+    int fitness_total = 0;
+
+    for (int i = 0; i < tamanho; i++) {
+        if (populacao[i].fitness >= 0) {
+            pais[n_pais] = populacao[i];
+            fitness_total += pais[n_pais].fitness;
+            n_pais++;
+        }
+    }
+
+    if (n_pais < 2) {
+        for (int i = 0; i < tamanho; i++) {
+            free(populacao[i].genes);
+            criar_individuo(&populacao[i]);
+        }
+        free(pais);
+        return;
+    }
+
+    Individuo *filhos = malloc(sizeof(Individuo) * tamanho);
+
+    for (int i = 0; i < tamanho; i++) {
+        filhos[i].genes = malloc(N_ITENS * sizeof(int));
+
+        int pai = sortear(pais, n_pais, fitness_total, -1);
+        int mae = sortear(pais, n_pais, fitness_total, pai);
+
+        int meio = N_ITENS / 2;
+
+        for (int j = 0; j < N_ITENS; j++) {
+            if (j < meio) filhos[i].genes[j] = pais[pai].genes[j];
+            else filhos[i].genes[j] = pais[mae].genes[j];
+        }
+
+        if ((float)rand() / RAND_MAX < taxa_mutacao) {
+            int pos = rand() % N_ITENS;
+            filhos[i].genes[pos] = !filhos[i].genes[pos];
+        }
+
+        filhos[i].fitness = calcular_fitness(filhos[i].genes);
+    }
+
+    for (int i = 0; i < tamanho; i++) {
+        free(populacao[i].genes);
+        populacao[i] = filhos[i];
+    }
+
+    free(pais);
+    free(filhos);
+}
+
+// ---------------- LEITURA DO ARQUIVO ----------------
+void ler_arquivo(char *nome) {
+    FILE *f = fopen(nome, "r");
+
+    if (!f) {
+        printf("Erro ao abrir arquivo!\n");
+        exit(1);
+    }
+
+    fscanf(f, "%d %d", &N_ITENS, &peso_maximo);
+
+    itens = malloc(sizeof(Item) * N_ITENS);
+
+    for (int i = 0; i < N_ITENS; i++) {
+        fscanf(f, "%d %d", &itens[i].valor, &itens[i].peso);
+    }
+
+    // Ignorar solução ótima (linha final)
+    fclose(f);
+}
+
+// ---------------- MAIN ----------------
+int main() {
+    srand(time(NULL));
+
+    char arquivo[100];
+    int TAM_POP, GERACOES;
+    float TAXA_MUT;
+
+    printf("Digite o nome do arquivo: ");
+    scanf(" %[^\n]", arquivo);
+
+    ler_arquivo(arquivo);
+
+    printf("Tamanho da populacao: ");
+    scanf("%d", &TAM_POP);
+
+    if (TAM_POP < 2) {
+        printf("Populacao invalida!\n");
+        return 1;
+    }
+
+    printf("Taxa de mutacao (0-1): ");
+    scanf("%f", &TAXA_MUT);
+
+    if (TAXA_MUT < 0 || TAXA_MUT > 1) {
+        printf("Taxa invalida!\n");
+        return 1;
+    }
+
+    printf("Numero de geracoes: ");
+    scanf("%d", &GERACOES);
+
+    if (GERACOES <= 0) {
+        printf("Geracoes invalido!\n");
+        return 1;
+    }
+
+    Individuo *pop = malloc(sizeof(Individuo) * TAM_POP);
+
+    for (int i = 0; i < TAM_POP; i++) {
+        criar_individuo(&pop[i]);
+    }
+
+    printf("Geracao 0: %.2f\n", calcular_media_fitness(pop, TAM_POP));
+
+    for (int g = 1; g <= GERACOES; g++) {
+        evoluir(pop, TAM_POP, TAXA_MUT);
+        printf("Geracao %d: %.2f\n", g, calcular_media_fitness(pop, TAM_POP));
+    }
+
+    // liberar memória
+    for (int i = 0; i < TAM_POP; i++) {
+        free(pop[i].genes);
+    }
+
+    free(pop);
+    free(itens);
+
+    return 0;
+}
