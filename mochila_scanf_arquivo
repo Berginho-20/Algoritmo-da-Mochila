@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 
 typedef struct {
     int peso;
@@ -10,208 +11,148 @@ typedef struct {
 typedef struct {
     int *genes;
     int fitness;
+    int peso_total;
 } Individuo;
 
-Item *itens;
-int N_ITENS;
-int peso_maximo;
+Item *pesos_e_valores;
+int n_itens_problema;
+int peso_maximo_problema;
 
-// ---------------- FITNESS ----------------
-int calcular_fitness(int genes[]) {
-    int peso_total = 0;
-    int valor_total = 0;
-
-    for (int i = 0; i < N_ITENS; i++) {
-        if (genes[i] == 1) {
-            peso_total += itens[i].peso;
-            valor_total += itens[i].valor;
+void calcular_metricas(Individuo *ind) {
+    int p_total = 0;
+    int v_total = 0;
+    for (int i = 0; i < n_itens_problema; i++) {
+        if (ind->genes[i] == 1) {
+            if (pesos_e_valores[i].peso > peso_maximo_problema) {
+                ind->fitness = 0;
+                ind->peso_total = pesos_e_valores[i].peso;
+                return;
+            }
+            p_total += pesos_e_valores[i].peso;
+            v_total += pesos_e_valores[i].valor;
         }
     }
-
-    if (peso_total > peso_maximo) return -1;
-    return valor_total;
+    ind->peso_total = p_total;
+    ind->fitness = (p_total > peso_maximo_problema) ? 0 : v_total;
 }
 
-// ---------------- INDIVIDUO ----------------
 void criar_individuo(Individuo *ind) {
-    ind->genes = (int *) malloc(N_ITENS * sizeof(int));
-
-    for (int i = 0; i < N_ITENS; i++) {
-        ind->genes[i] = rand() % 2;
+    ind->genes = malloc(sizeof(int) * n_itens_problema);
+    int metodo = rand() % 3;
+    if (metodo == 0) {
+        for (int i = 0; i < n_itens_problema; i++) ind->genes[i] = rand() % 2;
+    } else if (metodo == 1) {
+        for (int i = n_itens_problema - 1; i >= 0; i--) ind->genes[i] = rand() % 2;
+    } else {
+        int meio = n_itens_problema / 2;
+        for (int i = 0; i < meio; i++) ind->genes[i] = rand() % 2;
+        for (int i = meio; i < n_itens_problema; i++) ind->genes[i] = rand() % 2;
     }
-
-    ind->fitness = calcular_fitness(ind->genes);
+    calcular_metricas(ind);
 }
 
-// ---------------- MEDIA ----------------
-double calcular_media_fitness(Individuo populacao[], int tamanho) {
-    double soma = 0;
-    int validos = 0;
-
-    for (int i = 0; i < tamanho; i++) {
-        if (populacao[i].fitness >= 0) {
-            soma += populacao[i].fitness;
-            validos++;
+void remover_duplicatas(Individuo populacao[], int n_cromossomos) {
+    for (int i = 0; i < n_cromossomos; i++) {
+        if (populacao[i].fitness <= 0) continue;
+        for (int j = i + 1; j < n_cromossomos; j++) {
+            if (memcmp(populacao[i].genes, populacao[j].genes, sizeof(int) * n_itens_problema) == 0) {
+                populacao[j].fitness = 0;
+            }
         }
     }
-
-    return (validos == 0) ? 0 : soma / validos;
 }
 
-// ---------------- ROLETA ----------------
-int sortear(Individuo pais[], int n_pais, int fitness_total, int ignorar) {
+int comparar_individuos(const void *a, const void *b) {
+    return ((Individuo*)b)->fitness - ((Individuo*)a)->fitness;
+}
+
+int sortear(Individuo pais[], int n_pais, int fitness_total, int indice_a_ignorar) {
     if (fitness_total <= 0) return rand() % n_pais;
-
-    int total = fitness_total;
-    if (ignorar != -1) total -= pais[ignorar].fitness;
-
-    float r = (float)rand() / RAND_MAX;
+    int temp_total = fitness_total;
+    if (indice_a_ignorar != -1) temp_total -= pais[indice_a_ignorar].fitness;
+    if (temp_total <= 0) return rand() % n_pais;
+    float valor_sorteado = (float)rand() / (float)RAND_MAX;
     float acumulado = 0;
-
     for (int i = 0; i < n_pais; i++) {
-        if (i == ignorar) continue;
-
-        acumulado += (float)pais[i].fitness / total;
-        if (acumulado >= r) return i;
+        if (i == indice_a_ignorar) continue;
+        acumulado += (float)pais[i].fitness / temp_total;
+        if (acumulado >= valor_sorteado) return i;
     }
-
     return n_pais - 1;
 }
 
-// ---------------- EVOLUCAO ----------------
-void evoluir(Individuo populacao[], int tamanho, float taxa_mutacao) {
-
-    Individuo *pais = malloc(sizeof(Individuo) * tamanho);
-    int n_pais = 0;
-    int fitness_total = 0;
-
-    for (int i = 0; i < tamanho; i++) {
-        if (populacao[i].fitness >= 0) {
-            pais[n_pais] = populacao[i];
-            fitness_total += pais[n_pais].fitness;
-            n_pais++;
-        }
+void evoluir(Individuo populacao[], int n_cromossomos, float taxa_mutacao) {
+    Individuo *pool = malloc(sizeof(Individuo) * n_cromossomos * 2);
+    int fitness_total_pais = 0;
+    for (int i = 0; i < n_cromossomos; i++) {
+        pool[i] = populacao[i];
+        if (populacao[i].fitness > 0) fitness_total_pais += populacao[i].fitness;
     }
-
-    if (n_pais < 2) {
-        for (int i = 0; i < tamanho; i++) {
-            free(populacao[i].genes);
-            criar_individuo(&populacao[i]);
+    for (int i = 0; i < n_cromossomos; i++) {
+        int idx_pai = sortear(populacao, n_cromossomos, fitness_total_pais, -1);
+        int idx_mae = sortear(populacao, n_cromossomos, fitness_total_pais, idx_pai);
+        Individuo filho;
+        filho.genes = malloc(sizeof(int) * n_itens_problema);
+        int corte = rand() % n_itens_problema;
+        for (int j = 0; j < n_itens_problema; j++) {
+            filho.genes[j] = (j < corte) ? populacao[idx_pai].genes[j] : populacao[idx_mae].genes[j];
         }
-        free(pais);
-        return;
+        if (((float)rand() / (float)RAND_MAX) < taxa_mutacao) filho.genes[rand() % n_itens_problema] ^= 1;
+        calcular_metricas(&filho);
+        pool[n_cromossomos + i] = filho;
     }
-
-    Individuo *filhos = malloc(sizeof(Individuo) * tamanho);
-
-    for (int i = 0; i < tamanho; i++) {
-        filhos[i].genes = malloc(N_ITENS * sizeof(int));
-
-        int pai = sortear(pais, n_pais, fitness_total, -1);
-        int mae = sortear(pais, n_pais, fitness_total, pai);
-
-        int meio = N_ITENS / 2;
-
-        for (int j = 0; j < N_ITENS; j++) {
-            if (j < meio) filhos[i].genes[j] = pais[pai].genes[j];
-            else filhos[i].genes[j] = pais[mae].genes[j];
-        }
-
-        if ((float)rand() / RAND_MAX < taxa_mutacao) {
-            int pos = rand() % N_ITENS;
-            filhos[i].genes[pos] = !filhos[i].genes[pos];
-        }
-
-        filhos[i].fitness = calcular_fitness(filhos[i].genes);
+    remover_duplicatas(pool, n_cromossomos * 2);
+    qsort(pool, n_cromossomos * 2, sizeof(Individuo), comparar_individuos);
+    for (int i = 0; i < n_cromossomos; i++) {
+        if (populacao[i].genes != pool[i].genes) free(populacao[i].genes);
+        populacao[i] = pool[i];
     }
-
-    for (int i = 0; i < tamanho; i++) {
-        free(populacao[i].genes);
-        populacao[i] = filhos[i];
+    for (int i = n_cromossomos; i < n_cromossomos * 2; i++) {
+        int manter = 0;
+        for(int k=0; k<n_cromossomos; k++) if(pool[i].genes == populacao[k].genes) manter = 1;
+        if(!manter) free(pool[i].genes);
     }
-
-    free(pais);
-    free(filhos);
+    free(pool);
 }
 
-// ---------------- LEITURA DO ARQUIVO ----------------
-void ler_arquivo(char *nome) {
-    FILE *f = fopen(nome, "r");
-
-    if (!f) {
-        printf("Erro ao abrir arquivo!\n");
-        exit(1);
-    }
-
-    fscanf(f, "%d %d", &N_ITENS, &peso_maximo);
-
-    itens = malloc(sizeof(Item) * N_ITENS);
-
-    for (int i = 0; i < N_ITENS; i++) {
-        fscanf(f, "%d %d", &itens[i].valor, &itens[i].peso);
-    }
-
-    // Ignorar solução ótima (linha final)
-    fclose(f);
-}
-
-// ---------------- MAIN ----------------
 int main() {
     srand(time(NULL));
+    char filename[100];
+    int n_cromossomos, geracoes;
+    float taxa_mutacao;
 
-    char arquivo[100];
-    int TAM_POP, GERACOES;
-    float TAXA_MUT;
+    if (scanf("%s %d %d %f", filename, &n_cromossomos, &geracoes, &taxa_mutacao) != 4) return 1;
 
-    printf("Digite o nome do arquivo: ");
-    scanf(" %[^\n]", arquivo);
+    FILE *file = fopen(filename, "r");
+    if (!file) return 1;
 
-    ler_arquivo(arquivo);
+    if (fscanf(file, "%d %d", &n_itens_problema, &peso_maximo_problema) != 2) return 1;
+    pesos_e_valores = malloc(sizeof(Item) * n_itens_problema);
+    for (int i = 0; i < n_itens_problema; i++) {
+        fscanf(file, "%d %d", &pesos_e_valores[i].valor, &pesos_e_valores[i].peso);
+    }
+    fclose(file);
 
-    printf("Tamanho da populacao: ");
-    scanf("%d", &TAM_POP);
+    Individuo *populacao = malloc(sizeof(Individuo) * n_cromossomos);
+    for (int i = 0; i < n_cromossomos; i++) criar_individuo(&populacao[i]);
 
-    if (TAM_POP < 2) {
-        printf("Populacao invalida!\n");
-        return 1;
+    for (int g = 1; g <= geracoes; g++) {
+        evoluir(populacao, n_cromossomos, taxa_mutacao);
+        if (g == geracoes) {
+            double soma = 0;
+            for(int i = 0; i < n_cromossomos; i++) if(populacao[i].fitness > 0) soma += populacao[i].fitness;
+            printf("Geracao: %d | Media: %.2f | Melhor: %d\n", g, soma/n_cromossomos, populacao[0].fitness);
+        }
     }
 
-    printf("Taxa de mutacao (0-1): ");
-    scanf("%f", &TAXA_MUT);
-
-    if (TAXA_MUT < 0 || TAXA_MUT > 1) {
-        printf("Taxa invalida!\n");
-        return 1;
+    printf("\n--- RESULTADOS FINAIS ---\n");
+    int limite = (n_cromossomos < 5) ? n_cromossomos : 5;
+    for (int i = 0; i < limite; i++) {
+        printf("VALOR: %d | PESO: %dg\n", populacao[i].fitness, populacao[i].peso_total);
     }
 
-    printf("Numero de geracoes: ");
-    scanf("%d", &GERACOES);
-
-    if (GERACOES <= 0) {
-        printf("Geracoes invalido!\n");
-        return 1;
-    }
-
-    Individuo *pop = malloc(sizeof(Individuo) * TAM_POP);
-
-    for (int i = 0; i < TAM_POP; i++) {
-        criar_individuo(&pop[i]);
-    }
-
-    printf("Geracao 0: %.2f\n", calcular_media_fitness(pop, TAM_POP));
-
-    for (int g = 1; g <= GERACOES; g++) {
-        evoluir(pop, TAM_POP, TAXA_MUT);
-        printf("Geracao %d: %.2f\n", g, calcular_media_fitness(pop, TAM_POP));
-    }
-
-    // liberar memória
-    for (int i = 0; i < TAM_POP; i++) {
-        free(pop[i].genes);
-    }
-
-    free(pop);
-    free(itens);
-
+    for (int i = 0; i < n_cromossomos; i++) free(populacao[i].genes);
+    free(populacao);
+    free(pesos_e_valores);
     return 0;
 }
