@@ -1,0 +1,176 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <pthread.h> // Inclusão da biblioteca de threads
+
+typedef struct {
+    int peso;
+    int valor;
+} Item;
+
+typedef struct {
+    int *genes;
+    int fitness;
+    int peso_total;
+} Individuo;
+
+// Estrutura para passar dados para as threads
+typedef struct {
+    int inicio;
+    int fim;
+    Individuo *populacao;
+    Individuo *pool;
+    int n_cromossomos;
+    int fitness_total_pais;
+    float taxa_mutacao;
+} ThreadArgs;
+
+Item *pesos_e_valores;
+int n_itens_problema;
+int peso_maximo_problema;
+int n_threads; // Global para facilitar
+
+void calcular_metricas(Individuo *ind) {
+    int p_total = 0;
+    int v_total = 0;
+    for (int i = 0; i < n_itens_problema; i++) {
+        if (ind->genes[i] == 1) {
+            p_total += pesos_e_valores[i].peso;
+            v_total += pesos_e_valores[i].valor;
+        }
+    }
+    ind->peso_total = p_total;
+    ind->fitness = (p_total > peso_maximo_problema) ? 0 : v_total;
+}
+
+void criar_individuo(Individuo *ind) {
+    ind->genes = malloc(sizeof(int) * n_itens_problema);
+    for (int i = 0; i < n_itens_problema; i++) ind->genes[i] = rand() % 2;
+    calcular_metricas(ind);
+}
+
+// Função auxiliar de sorteio (Roleta)
+int sortear(Individuo pais[], int n_pais, int fitness_total, int indice_a_ignorar) {
+    if (fitness_total <= 0) return rand() % n_pais;
+    int temp_total = fitness_total;
+    if (indice_a_ignorar != -1) temp_total -= pais[indice_a_ignorar].fitness;
+    if (temp_total <= 0) return rand() % n_pais;
+    
+    float valor_sorteado = (float)rand() / (float)RAND_MAX;
+    float acumulado = 0;
+    for (int i = 0; i < n_pais; i++) {
+        if (i == indice_a_ignorar) continue;
+        acumulado += (float)pais[i].fitness / temp_total;
+        if (acumulado >= valor_sorteado) return i;
+    }
+    return n_pais - 1;
+}
+
+// FUNÇÃO QUE AS THREADS IRÃO EXECUTAR
+void* thread_evoluir(void* arg) {
+    ThreadArgs* dados = (ThreadArgs*)arg;
+    unsigned int seed = time(NULL) ^ pthread_self(); // Seed única por thread
+
+    for (int i = dados->inicio; i < dados->fim; i++) {
+        int idx_pai = sortear(dados->populacao, dados->n_cromossomos, dados->fitness_total_pais, -1);
+        int idx_mae = sortear(dados->populacao, dados->n_cromossomos, dados->fitness_total_pais, idx_pai);
+        
+        Individuo filho;
+        filho.genes = malloc(sizeof(int) * n_itens_problema);
+        int corte = rand_r(&seed) % n_itens_problema;
+
+        for (int j = 0; j < n_itens_problema; j++) {
+            filho.genes[j] = (j < corte) ? dados->populacao[idx_pai].genes[j] : dados->populacao[idx_mae].genes[j];
+        }
+
+        if (((float)rand_r(&seed) / (float)RAND_MAX) < dados->taxa_mutacao) {
+            filho.genes[rand_r(&seed) % n_itens_problema] ^= 1;
+        }
+
+        calcular_metricas(&filho);
+        dados->pool[dados->n_cromossomos + i] = filho;
+    }
+    return NULL;
+}
+
+int comparar_individuos(const void *a, const void *b) {
+    return ((Individuo*)b)->fitness - ((Individuo*)a)->fitness;
+}
+
+void evoluir_paralelo(Individuo populacao[], int n_cromossomos, float taxa_mutacao) {
+    Individuo *pool = malloc(sizeof(Individuo) * n_cromossomos * 2);
+    int fitness_total_pais = 0;
+
+    for (int i = 0; i < n_cromossomos; i++) {
+        pool[i] = populacao[i];
+        if (populacao[i].fitness > 0) fitness_total_pais += populacao[i].fitness;
+    }
+
+    pthread_t threads[n_threads];
+    ThreadArgs args[n_threads];
+    int chunk = n_cromossomos / n_threads;
+
+    for (int i = 0; i < n_threads; i++) {
+        args[i].inicio = i * chunk;
+        args[i].fim = (i == n_threads - 1) ? n_cromossomos : (i + 1) * chunk;
+        args[i].populacao = populacao;
+        args[i].pool = pool;
+        args[i].n_cromossomos = n_cromossomos;
+        args[i].fitness_total_pais = fitness_total_pais;
+        args[i].taxa_mutacao = taxa_mutacao;
+
+        pthread_create(&threads[i], NULL, thread_evoluir, &args[i]);
+    }
+
+    for (int i = 0; i < n_threads; i++) pthread_join(threads[i], NULL);
+
+    qsort(pool, n_cromossomos * 2, sizeof(Individuo), comparar_individuos);
+
+    for (int i = 0; i < n_cromossomos; i++) {
+        if (populacao[i].genes != pool[i].genes) free(populacao[i].genes);
+        populacao[i] = pool[i];
+    }
+    for (int i = n_cromossomos; i < n_cromossomos * 2; i++) {
+        int manter = 0;
+        for(int k=0; k<n_cromossomos; k++) if(pool[i].genes == populacao[k].genes) manter = 1;
+        if(!manter) free(pool[i].genes);
+    }
+    free(pool);
+}
+
+int main() {
+    char filename[100];
+    int n_cromossomos, geracoes;
+    float taxa_mutacao;
+
+    // Adicionado leitura de n_threads 
+    if (scanf("%s %d %d %f %d", filename, &n_cromossomos, &geracoes, &taxa_mutacao, &n_threads) != 5) return 1;
+
+    FILE *file = fopen(filename, "r");
+    if (!file) return 1;
+    fscanf(file, "%d %d", &n_itens_problema, &peso_maximo_problema);
+    pesos_e_valores = malloc(sizeof(Item) * n_itens_problema);
+    for (int i = 0; i < n_itens_problema; i++) {
+        fscanf(file, "%d %d", &pesos_e_valores[i].valor, &pesos_e_valores[i].peso);
+    }
+    fclose(file);
+
+    srand(time(NULL));
+    Individuo *populacao = malloc(sizeof(Individuo) * n_cromossomos);
+    for (int i = 0; i < n_cromossomos; i++) criar_individuo(&populacao[i]);
+
+    for (int g = 1; g <= geracoes; g++) {
+        evoluir_paralelo(populacao, n_cromossomos, taxa_mutacao);
+        if (g % 10 == 0 || g == geracoes) {
+            printf("Geracao: %d | Melhor: %d\n", g, populacao[0].fitness);
+        }
+    }
+
+    printf("\n--- RESULTADO FINAL ---\nVALOR: %d | PESO: %d\n", populacao[0].fitness, populacao[0].peso_total);
+
+    for (int i = 0; i < n_cromossomos; i++) free(populacao[i].genes);
+    free(populacao);
+    free(pesos_e_valores);
+    return 0;
+}
