@@ -4,8 +4,8 @@
 #include <time.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdint.h>
 
-// Definição de uma rand_r simples para Windows se não existir
 #ifdef _WIN32
 int rand_r(unsigned int *seedp) {
     srand(*seedp);
