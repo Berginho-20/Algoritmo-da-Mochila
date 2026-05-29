@@ -92,12 +92,10 @@ void evoluir_local(Individuo populacao[], int inicio, int fim, int n_cromossomos
         if (populacao[i].fitness > 0) fitness_total_pais += populacao[i].fitness;
     }
 
-    // Copia a parcela atual correspondente ao processo para o pool de pais
     for (int i = 0; i < sub_tamanho; i++) {
         pool[i] = populacao[inicio + i];
     }
 
-    // Geração de filhos baseada em toda a população disponível
     for (int i = 0; i < sub_tamanho; i++) {
         int idx_pai = sortear(populacao, n_cromossomos, fitness_total_pais, -1, seed);
         int idx_mae = sortear(populacao, n_cromossomos, fitness_total_pais, idx_pai, seed);
@@ -153,7 +151,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Transmite os parâmetros básicos lidos pelo mestre para todos os demais nós
     MPI_Bcast(&n_cromossomos, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&geracoes, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&taxa_mutacao, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
@@ -188,7 +185,6 @@ int main(int argc, char **argv) {
     int inicio = rank * chunk;
     int fim = (rank == size - 1) ? n_cromossomos : (rank + 1) * chunk;
 
-    // Alocação de buffers para comunicação estruturada via MPI
     int *buffer_genes_enviar = malloc(sizeof(int) * (fim - inicio) * n_itens_problema);
     int *buffer_fitness_enviar = malloc(sizeof(int) * (fim - inicio));
     int *buffer_pesos_enviar = malloc(sizeof(int) * (fim - inicio));
@@ -214,14 +210,12 @@ int main(int argc, char **argv) {
     for (int g = 1; g <= geracoes; g++) {
         evole_local(populacao, inicio, fim, n_cromossomos, taxa_mutacao, &seed);
 
-        // Serializa a fatia processada localmente para os buffers de transmissão
         for (int i = 0; i < (fim - inicio); i++) {
             memcpy(&buffer_genes_enviar[i * n_itens_problema], populacao[inicio + i].genes, sizeof(int) * n_itens_problema);
             buffer_fitness_enviar[i] = populacao[inicio + i].fitness;
             buffer_pesos_enviar[i] = populacao[inicio + i].peso_total;
         }
 
-        // Sincroniza e distribui os dados de todos os processos da rede MPI
         MPI_Allgatherv(buffer_genes_enviar, (fim - inicio) * n_itens_problema, MPI_INT,
                        buffer_genes_receber, counts_elementos, displs_elementos, MPI_INT, MPI_COMM_WORLD);
 
@@ -231,7 +225,6 @@ int main(int argc, char **argv) {
         MPI_Allgatherv(buffer_pesos_enviar, (fim - inicio), MPI_INT,
                        buffer_pesos_receber, counts_individuos, displs_individuos, MPI_INT, MPI_COMM_WORLD);
 
-        // Reconstrói a população globalizada de forma idêntica em todos os ranks
         for (int i = 0; i < n_cromossomos; i++) {
             memcpy(populacao[i].genes, &buffer_genes_receber[i * n_itens_problema], sizeof(int) * n_itens_problema);
             populacao[i].fitness = buffer_fitness_receber[i];
@@ -257,7 +250,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Desalocação limpa de todas as estruturas e buffers locais
     free(buffer_genes_enviar); free(buffer_fitness_enviar); free(buffer_pesos_enviar);
     free(buffer_genes_receber); free(buffer_fitness_receber); free(buffer_pesos_receber);
     free(counts_elementos); free(displs_elementos); free(counts_individuos); free(displs_individuos);
