@@ -1,0 +1,271 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <mpi.h>
+
+typedef struct {
+    int peso;
+    int valor;
+} Item;
+
+typedef struct {
+    int *genes;
+    int fitness;
+    int peso_total;
+} Individuo;
+
+Item *pesos_e_valores;
+int n_itens_problema;
+int peso_maximo_problema;
+
+void calcular_metricas(Individuo *ind) {
+    int p_total = 0;
+    int v_total = 0;
+    for (int i = 0; i < n_itens_problema; i++) {
+        if (ind->genes[i] == 1) {
+            if (pesos_e_valores[i].peso > peso_maximo_problema) {
+                ind->fitness = 0;
+                ind->peso_total = pesos_e_valores[i].peso;
+                return;
+            }
+            p_total += pesos_e_valores[i].peso;
+            v_total += pesos_e_valores[i].valor;
+        }
+    }
+    ind->peso_total = p_total;
+    ind->fitness = (p_total > peso_maximo_problema) ? 0 : v_total;
+}
+
+void criar_individuo(Individuo *ind, unsigned int *seed) {
+    ind->genes = malloc(sizeof(int) * n_itens_problema);
+    int metodo = rand_r(seed) % 3;
+    if (metodo == 0) {
+        for (int i = 0; i < n_itens_problema; i++) ind->genes[i] = rand_r(seed) % 2;
+    } else if (metodo == 1) {
+        for (int i = n_itens_problema - 1; i >= 0; i--) ind->genes[i] = rand_r(seed) % 2;
+    } else {
+        int meio = n_itens_problema / 2;
+        for (int i = 0; i < meio; i++) ind->genes[i] = rand_r(seed) % 2;
+        for (int i = meio; i < n_itens_problema; i++) ind->genes[i] = rand_r(seed) % 2;
+    }
+    calcular_metricas(ind);
+}
+
+void remover_duplicatas(Individuo populacao[], int n_cromossomos) {
+    for (int i = 0; i < n_cromossomos; i++) {
+        if (populacao[i].fitness <= 0) continue;
+        for (int j = i + 1; j < n_cromossomos; j++) {
+            if (memcmp(populacao[i].genes, populacao[j].genes, sizeof(int) * n_itens_problema) == 0) {
+                populacao[j].fitness = 0;
+            }
+        }
+    }
+}
+
+int comparar_individuos(const void *a, const void *b) {
+    return ((Individuo*)b)->fitness - ((Individuo*)a)->fitness;
+}
+
+int sortear(Individuo pais[], int n_pais, int fitness_total, int indice_a_ignorar, unsigned int *seed) {
+    if (fitness_total <= 0) return rand_r(seed) % n_pais;
+    int temp_total = fitness_total;
+    if (indice_a_ignorar != -1) temp_total -= pais[indice_a_ignorar].fitness;
+    if (temp_total <= 0) return rand_r(seed) % n_pais;
+    
+    float valor_sorteado = (float)rand_r(seed) / (float)RAND_MAX;
+    float acumulado = 0;
+    for (int i = 0; i < n_pais; i++) {
+        if (i == indice_a_ignorar) continue;
+        acumulado += (float)pais[i].fitness / temp_total;
+        if (acumulado >= valor_sorteado) return i;
+    }
+    return n_pais - 1;
+}
+
+void evoluir_local(Individuo populacao[], int inicio, int fim, int n_cromossomos, float taxa_mutacao, unsigned int *seed) {
+    int sub_tamanho = fim - inicio;
+    Individuo *pool = malloc(sizeof(Individuo) * sub_tamanho * 2);
+    int fitness_total_pais = 0;
+
+    for (int i = 0; i < n_cromossomos; i++) {
+        if (populacao[i].fitness > 0) fitness_total_pais += populacao[i].fitness;
+    }
+
+    // Copia a parcela atual correspondente ao processo para o pool de pais
+    for (int i = 0; i < sub_tamanho; i++) {
+        pool[i] = populacao[inicio + i];
+    }
+
+    // Geração de filhos baseada em toda a população disponível
+    for (int i = 0; i < sub_tamanho; i++) {
+        int idx_pai = sortear(populacao, n_cromossomos, fitness_total_pais, -1, seed);
+        int idx_mae = sortear(populacao, n_cromossomos, fitness_total_pais, idx_pai, seed);
+        
+        Individuo filho;
+        filho.genes = malloc(sizeof(int) * n_itens_problema);
+        int corte = rand_r(seed) % n_itens_problema;
+        for (int j = 0; j < n_itens_problema; j++) {
+            filho.genes[j] = (j < corte) ? populacao[idx_pai].genes[j] : populacao[idx_mae].genes[j];
+        }
+        if (((float)rand_r(seed) / (float)RAND_MAX) < taxa_mutacao) {
+            filho.genes[rand_r(seed) % n_itens_problema] ^= 1;
+        }
+        calcular_metricas(&filho);
+        pool[sub_tamanho + i] = filho;
+    }
+
+    remover_duplicatas(pool, sub_tamanho * 2);
+    qsort(pool, sub_tamanho * 2, sizeof(Individuo), comparar_individuos);
+
+    for (int i = 0; i < sub_tamanho; i++) {
+        if (populacao[inicio + i].genes != pool[i].genes) {
+            free(populacao[inicio + i].genes);
+        }
+        populacao[inicio + i] = pool[i];
+    }
+
+    for (int i = sub_tamanho; i < sub_tamanho * 2; i++) {
+        int manter = 0;
+        for(int k = inicio; k < fim; k++) {
+            if(pool[i].genes == populacao[k].genes) manter = 1;
+        }
+        if(!manter) free(pool[i].genes);
+    }
+    free(pool);
+}
+
+int main(int argc, char **argv) {
+    int rank, size;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    char filename[100];
+    int n_cromossomos, geracoes;
+    float taxa_mutacao;
+
+    if (rank == 0) {
+        if (scanf("%s %d %d %f", filename, &n_cromossomos, &geracoes, &taxa_mutacao) != 4) {
+            MPI_Abort(MPI_COMM_WORLD, 1);
+            return 1;
+        }
+    }
+
+    // Transmite os parâmetros básicos lidos pelo mestre para todos os demais nós
+    MPI_Bcast(&n_cromossomos, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&geracoes, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&taxa_mutacao, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(filename, 100, MPI_CHAR, 0, MPI_COMM_WORLD);
+
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        MPI_Finalize();
+        return 1;
+    }
+
+    if (fscanf(file, "%d %d", &n_itens_problema, &peso_maximo_problema) != 2) {
+        fclose(file);
+        MPI_Finalize();
+        return 1;
+    }
+
+    pesos_e_valores = malloc(sizeof(Item) * n_itens_problema);
+    for (int i = 0; i < n_itens_problema; i++) {
+        fscanf(file, "%d %d", &pesos_e_valores[i].valor, &pesos_e_valores[i].peso);
+    }
+    fclose(file);
+
+    unsigned int seed = (unsigned int)(time(NULL) + rank * 31);
+
+    Individuo *populacao = malloc(sizeof(Individuo) * n_cromossomos);
+    for (int i = 0; i < n_cromossomos; i++) {
+        criar_individuo(&populacao[i], &seed);
+    }
+
+    int chunk = n_cromossomos / size;
+    int inicio = rank * chunk;
+    int fim = (rank == size - 1) ? n_cromossomos : (rank + 1) * chunk;
+
+    // Alocação de buffers para comunicação estruturada via MPI
+    int *buffer_genes_enviar = malloc(sizeof(int) * (fim - inicio) * n_itens_problema);
+    int *buffer_fitness_enviar = malloc(sizeof(int) * (fim - inicio));
+    int *buffer_pesos_enviar = malloc(sizeof(int) * (fim - inicio));
+
+    int *buffer_genes_receber = malloc(sizeof(int) * n_cromossomos * n_itens_problema);
+    int *buffer_fitness_receber = malloc(sizeof(int) * n_cromossomos);
+    int *buffer_pesos_receber = malloc(sizeof(int) * n_cromossomos);
+
+    int *counts_elementos = malloc(sizeof(int) * size);
+    int *displs_elementos = malloc(sizeof(int) * size);
+    int *counts_individuos = malloc(sizeof(int) * size);
+    int *displs_individuos = malloc(sizeof(int) * size);
+
+    for (int i = 0; i < size; i++) {
+        int idx_ini = i * chunk;
+        int idx_fim = (i == size - 1) ? n_cromossomos : (i + 1) * chunk;
+        counts_individuos[i] = idx_fim - idx_ini;
+        displs_individuos[i] = idx_ini;
+        counts_elementos[i] = (idx_fim - idx_ini) * n_itens_problema;
+        displs_elementos[i] = idx_ini * n_itens_problema;
+    }
+
+    for (int g = 1; g <= geracoes; g++) {
+        evole_local(populacao, inicio, fim, n_cromossomos, taxa_mutacao, &seed);
+
+        // Serializa a fatia processada localmente para os buffers de transmissão
+        for (int i = 0; i < (fim - inicio); i++) {
+            memcpy(&buffer_genes_enviar[i * n_itens_problema], populacao[inicio + i].genes, sizeof(int) * n_itens_problema);
+            buffer_fitness_enviar[i] = populacao[inicio + i].fitness;
+            buffer_pesos_enviar[i] = populacao[inicio + i].peso_total;
+        }
+
+        // Sincroniza e distribui os dados de todos os processos da rede MPI
+        MPI_Allgatherv(buffer_genes_enviar, (fim - inicio) * n_itens_problema, MPI_INT,
+                       buffer_genes_receber, counts_elementos, displs_elementos, MPI_INT, MPI_COMM_WORLD);
+
+        MPI_Allgatherv(buffer_fitness_enviar, (fim - inicio), MPI_INT,
+                       buffer_fitness_receber, counts_individuos, displs_individuos, MPI_INT, MPI_COMM_WORLD);
+
+        MPI_Allgatherv(buffer_pesos_enviar, (fim - inicio), MPI_INT,
+                       buffer_pesos_receber, counts_individuos, displs_individuos, MPI_INT, MPI_COMM_WORLD);
+
+        // Reconstrói a população globalizada de forma idêntica em todos os ranks
+        for (int i = 0; i < n_cromossomos; i++) {
+            memcpy(populacao[i].genes, &buffer_genes_receber[i * n_itens_problema], sizeof(int) * n_itens_problema);
+            populacao[i].fitness = buffer_fitness_receber[i];
+            populacao[i].peso_total = buffer_pesos_receber[i];
+        }
+
+        qsort(populacao, n_cromossomos, sizeof(Individuo), comparar_individuos);
+
+        if (g == geracoes && rank == 0) {
+            double soma = 0;
+            for (int i = 0; i < n_cromossomos; i++) {
+                if (populacao[i].fitness > 0) soma += populacao[i].fitness;
+            }
+            printf("Geracao: %d | Media: %.2f | Melhor: %d\n", g, soma / n_cromossomos, populacao[0].fitness);
+        }
+    }
+
+    if (rank == 0) {
+        printf("\n--- RESULTADOS FINAIS ---\n");
+        int limite = (n_cromossomos < 5) ? n_cromossomos : 5;
+        for (int i = 0; i < limite; i++) {
+            printf("VALOR: %d | PESO: %dg\n", populacao[i].fitness, populacao[i].peso_total);
+        }
+    }
+
+    // Desalocação limpa de todas as estruturas e buffers locais
+    free(buffer_genes_enviar); free(buffer_fitness_enviar); free(buffer_pesos_enviar);
+    free(buffer_genes_receber); free(buffer_fitness_receber); free(buffer_pesos_receber);
+    free(counts_elementos); free(displs_elementos); free(counts_individuos); free(displs_individuos);
+
+    for (int i = 0; i < n_cromossomos; i++) free(populacao[i].genes);
+    free(populacao);
+    free(pesos_e_valores);
+
+    MPI_Finalize();
+    return 0;
+}
